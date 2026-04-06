@@ -361,7 +361,7 @@ static void generate_shaders(pl_dispatch dp,
 
     if (has_img && !gpu->glsl.gles)
         ADD(pre, "#extension GL_ARB_shader_image_load_store : enable\n");
-    if (has_ubo)
+    if (has_ubo && !gpu->glsl.gles)
         ADD(pre, "#extension GL_ARB_uniform_buffer_object : enable\n");
     if (has_ssbo && !gpu->glsl.gles)
         ADD(pre, "#extension GL_ARB_shader_storage_buffer_object : enable\n");

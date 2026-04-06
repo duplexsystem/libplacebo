@@ -306,7 +306,7 @@ static void generate_shaders(pl_dispatch dp,
     pl_str_builder pre = dp->tmp[TMP_PRELUDE];
     ADD(pre, "#version %d%s\n", gpu->glsl.version,
         (gpu->glsl.gles && gpu->glsl.version > 100) ? " es" : "");
-    if (pass_params->type == PL_PASS_COMPUTE)
+    if (pass_params->type == PL_PASS_COMPUTE && !gpu->glsl.gles)
         ADD(pre, "#extension GL_ARB_compute_shader : enable\n");
 
     // Enable this unconditionally if the GPU supports it, since we have no way
@@ -361,9 +361,9 @@ static void generate_shaders(pl_dispatch dp,
 
     if (has_img && !gpu->glsl.gles)
         ADD(pre, "#extension GL_ARB_shader_image_load_store : enable\n");
-    if (has_ubo)
+    if (has_ubo && !gpu->glsl.gles)
         ADD(pre, "#extension GL_ARB_uniform_buffer_object : enable\n");
-    if (has_ssbo)
+    if (has_ssbo && !gpu->glsl.gles)
         ADD(pre, "#extension GL_ARB_shader_storage_buffer_object : enable\n");
     if (has_texel)
         ADD(pre, "#extension GL_ARB_texture_buffer_object : enable\n");

@@ -158,7 +158,8 @@ pl_gpu pl_gpu_create_gl(pl_log log, pl_opengl pl_gl, const struct pl_opengl_para
                 params->max_glsl_version, glsl->version);
     }
 
-    if (gl_test_ext(gpu, "GL_ARB_compute_shader", 43, 0) && glsl->version >= 420) {
+    if (gl_test_ext(gpu, "GL_ARB_compute_shader", 43, 31) &&
+        glsl->version >= (p->gles_ver ? 310 : 420)) {
         glsl->compute = !params->no_compute;
         get(GL_MAX_COMPUTE_SHARED_MEMORY_SIZE, &glsl->max_shmem_size);
         get(GL_MAX_COMPUTE_WORK_GROUP_INVOCATIONS, &glsl->max_group_threads);
@@ -181,11 +182,11 @@ pl_gpu pl_gpu_create_gl(pl_log log, pl_opengl pl_gl, const struct pl_opengl_para
     limits->thread_safe = params->make_current;
     limits->callbacks = gl_test_ext(gpu, "GL_ARB_sync", 32, 30);
     limits->align_vertex_stride = 1;
-    if (gl_test_ext(gpu, "GL_ARB_pixel_buffer_object", 31, 0)) {
+    if (gl_test_ext(gpu, "GL_ARB_pixel_buffer_object", 31, 30)) {
         limits->max_buf_size = SIZE_MAX; // no restriction imposed by GL
-        if (gl_test_ext(gpu, "GL_ARB_uniform_buffer_object", 31, 0))
+        if (gl_test_ext(gpu, "GL_ARB_uniform_buffer_object", 31, 30))
             get(GL_MAX_UNIFORM_BLOCK_SIZE, &limits->max_ubo_size);
-        if (gl_test_ext(gpu, "GL_ARB_shader_storage_buffer_object", 43, 0) &&
+        if (gl_test_ext(gpu, "GL_ARB_shader_storage_buffer_object", 43, 31) &&
             gpu->glsl.version >= 140)
         {
             get(GL_MAX_SHADER_STORAGE_BLOCK_SIZE, &limits->max_ssbo_size);

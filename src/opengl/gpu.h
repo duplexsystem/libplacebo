@@ -60,6 +60,14 @@ struct pl_gl {
     bool has_egl_storage;
     bool has_egl_import;
     int gather_comps;
+
+    // GLES readback format probe cache (avoids per-texture GetIntegerv)
+    struct gl_readback_entry {
+        GLint iformat;          // GL internal format (key)
+        GLenum read_type, read_format;
+        bool readable;
+    } readback_cache[32];
+    int num_readback_cached;
 };
 
 static inline const gl_funcs *gl_funcs_get(pl_gpu gpu)
@@ -104,6 +112,10 @@ struct pl_tex_gl {
     GLenum format;
     GLint iformat;
     GLenum type;
+
+    // Cached sampler state to avoid redundant TexParameteri calls
+    GLint cached_filter; // -1 = unset
+    GLint cached_wrap;   // -1 = unset
 
     // For imported/exported textures
     EGLImageKHR image;

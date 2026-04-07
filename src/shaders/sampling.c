@@ -1079,7 +1079,10 @@ bool pl_shader_sample_ortho2(pl_shader sh, const struct pl_sample_src *src,
         ${vecType: comps} hi = ${vecType: comps}(0.0);                          \
         ${vecType: comps} lo = ${vecType: comps}(1e9);                          \
     @}                                                                          \
-    #pragma unroll 4                                                            \
+    @if (N <= 8)                                                                \
+        #pragma unroll                                                          \
+    @else                                                                       \
+        #pragma unroll 4                                                        \
     for (uint n = 0u; n < ${uint: N}; n += ${const uint: use_linear ? 2u : 1u}) { \
         if (n % 4u == 0u)                                                        \
             ws = $lut(vec2(float(n / 4u) / ${const float: denom}, fcoord));     \

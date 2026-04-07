@@ -632,7 +632,7 @@ void pl_shader_linearize(pl_shader sh, const struct pl_color_space *csp)
         GLSL("color.rgb = pow(color.rgb, vec3(1.8));\n");
         goto scale_out;
     case PL_COLOR_TRC_GAMMA20:
-        GLSL("color.rgb = pow(color.rgb, vec3(2.0));\n");
+        GLSL("color.rgb = color.rgb * color.rgb;\n");
         goto scale_out;
     case PL_COLOR_TRC_UNKNOWN:
     case PL_COLOR_TRC_GAMMA22:
@@ -769,7 +769,7 @@ void pl_shader_delinearize(pl_shader sh, const struct pl_color_space *csp)
         GLSL("color.rgb = pow(color.rgb, vec3(1.0/1.8));\n");
         return;
     case PL_COLOR_TRC_GAMMA20:
-        GLSL("color.rgb = pow(color.rgb, vec3(1.0/2.0));\n");
+        GLSL("color.rgb = sqrt(color.rgb);\n");
         return;
     case PL_COLOR_TRC_UNKNOWN:
     case PL_COLOR_TRC_GAMMA22:

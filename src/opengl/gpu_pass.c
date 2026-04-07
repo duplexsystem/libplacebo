@@ -455,12 +455,18 @@ static void update_desc(pl_gpu gpu, pl_pass pass, int index,
 
         GLint filter = filters[db->sample_mode];
         GLint wrap = wraps[db->address_mode];
-        gl->TexParameteri(tex_gl->target, GL_TEXTURE_MIN_FILTER, filter);
-        gl->TexParameteri(tex_gl->target, GL_TEXTURE_MAG_FILTER, filter);
-        switch (pl_tex_params_dimension(tex->params)) {
-        case 3: gl->TexParameteri(tex_gl->target, GL_TEXTURE_WRAP_R, wrap); // fall through
-        case 2: gl->TexParameteri(tex_gl->target, GL_TEXTURE_WRAP_T, wrap); // fall through
-        case 1: gl->TexParameteri(tex_gl->target, GL_TEXTURE_WRAP_S, wrap); break;
+        if (tex_gl->cached_filter != filter) {
+            gl->TexParameteri(tex_gl->target, GL_TEXTURE_MIN_FILTER, filter);
+            gl->TexParameteri(tex_gl->target, GL_TEXTURE_MAG_FILTER, filter);
+            tex_gl->cached_filter = filter;
+        }
+        if (tex_gl->cached_wrap != wrap) {
+            switch (pl_tex_params_dimension(tex->params)) {
+            case 3: gl->TexParameteri(tex_gl->target, GL_TEXTURE_WRAP_R, wrap); // fall through
+            case 2: gl->TexParameteri(tex_gl->target, GL_TEXTURE_WRAP_T, wrap); // fall through
+            case 1: gl->TexParameteri(tex_gl->target, GL_TEXTURE_WRAP_S, wrap); break;
+            }
+            tex_gl->cached_wrap = wrap;
         }
         return;
     }
@@ -497,50 +503,6 @@ static void update_desc(pl_gpu gpu, pl_pass pass, int index,
     pl_unreachable();
 }
 
-static void unbind_desc(pl_gpu gpu, pl_pass pass, int index,
-                        const struct pl_desc_binding *db)
-{
-    const gl_funcs *gl = gl_funcs_get(gpu);
-    const struct pl_desc *desc = &pass->params.descriptors[index];
-
-    switch (desc->type) {
-    case PL_DESC_SAMPLED_TEX: {
-        pl_tex tex = db->object;
-        struct pl_tex_gl *tex_gl = PL_PRIV(tex);
-        gl->ActiveTexture(GL_TEXTURE0 + desc->binding);
-        gl->BindTexture(tex_gl->target, 0);
-        return;
-    }
-    case PL_DESC_STORAGE_IMG: {
-        pl_tex tex = db->object;
-        struct pl_tex_gl *tex_gl = PL_PRIV(tex);
-        gl->BindImageTexture(desc->binding, 0, 0, GL_FALSE, 0,
-                             GL_WRITE_ONLY, GL_R32F);
-        if (desc->access != PL_DESC_ACCESS_READONLY)
-            gl->MemoryBarrier(tex_gl->barrier);
-        return;
-    }
-    case PL_DESC_BUF_UNIFORM:
-        gl->BindBufferBase(GL_UNIFORM_BUFFER, desc->binding, 0);
-        return;
-    case PL_DESC_BUF_STORAGE: {
-        pl_buf buf = db->object;
-        struct pl_buf_gl *buf_gl = PL_PRIV(buf);
-        gl->BindBufferBase(GL_SHADER_STORAGE_BUFFER, desc->binding, 0);
-        if (desc->access != PL_DESC_ACCESS_READONLY)
-            gl->MemoryBarrier(buf_gl->barrier);
-        return;
-    }
-    case PL_DESC_BUF_TEXEL_UNIFORM:
-    case PL_DESC_BUF_TEXEL_STORAGE:
-        assert(!"unimplemented"); // TODO
-    case PL_DESC_INVALID:
-    case PL_DESC_TYPE_COUNT:
-        break;
-    }
-
-    pl_unreachable();
-}
 
 void gl_pass_run(pl_gpu gpu, const struct pl_pass_run_params *params)
 {
@@ -579,8 +541,6 @@ void gl_pass_run(pl_gpu gpu, const struct pl_pass_run_params *params)
         gl->Scissor(params->scissors.x0, params->scissors.y0,
                     pl_rect_w(params->scissors), pl_rect_h(params->scissors));
         gl->Enable(GL_SCISSOR_TEST);
-        gl->Disable(GL_DEPTH_TEST);
-        gl->Disable(GL_CULL_FACE);
         gl_check_err(gpu, "gl_pass_run: enabling viewport/scissor");
 
         const struct pl_blend_params *blend = pass->params.blend_params;
@@ -671,17 +631,13 @@ void gl_pass_run(pl_gpu gpu, const struct pl_pass_run_params *params)
         gl_timer_end(gpu, params->timer);
         gl_check_err(gpu, "gl_pass_run: drawing");
 
-        if (pass_gl->vao) {
-            gl->BindVertexArray(0);
-        } else {
+        if (!pass_gl->vao) {
             for (int i = 0; i < pass->params.num_vertex_attribs; i++)
                 gl->DisableVertexAttribArray(i);
         }
 
-        gl->BindBuffer(GL_ARRAY_BUFFER, 0);
-        gl->Disable(GL_SCISSOR_TEST);
-        gl->Disable(GL_BLEND);
-        gl->BindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+        if (blend)
+            gl->Disable(GL_BLEND);
         break;
     }
 
@@ -698,9 +654,26 @@ void gl_pass_run(pl_gpu gpu, const struct pl_pass_run_params *params)
         pl_unreachable();
     }
 
-    for (int i = 0; i < pass->params.num_descriptors; i++)
-        unbind_desc(gpu, pass, i, &params->desc_bindings[i]);
-    gl->ActiveTexture(GL_TEXTURE0);
+    // Coalesce memory barriers for writable descriptors instead of
+    // unbinding each descriptor individually (the next pass will rebind)
+    GLbitfield barriers = 0;
+    for (int i = 0; i < pass->params.num_descriptors; i++) {
+        const struct pl_desc *desc = &pass->params.descriptors[i];
+        if (desc->access != PL_DESC_ACCESS_READONLY) {
+            const struct pl_desc_binding *db = &params->desc_bindings[i];
+            switch (desc->type) {
+            case PL_DESC_STORAGE_IMG:
+                barriers |= ((struct pl_tex_gl *) PL_PRIV((pl_tex) db->object))->barrier;
+                break;
+            case PL_DESC_BUF_STORAGE:
+                barriers |= ((struct pl_buf_gl *) PL_PRIV((pl_buf) db->object))->barrier;
+                break;
+            default: break;
+            }
+        }
+    }
+    if (barriers)
+        gl->MemoryBarrier(barriers);
 
     gl->UseProgram(0);
     gl_check_err(gpu, "gl_pass_run");

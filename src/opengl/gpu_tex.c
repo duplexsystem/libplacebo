@@ -331,6 +331,8 @@ pl_tex gl_tex_create(pl_gpu gpu, const struct pl_tex_params *params)
         .iformat = fmt->ifmt,
         .type = fmt->type,
         .barrier = tex_barrier(tex),
+        .cached_filter = -1,
+        .cached_wrap = -1,
         .fd = -1,
     };
 
@@ -433,19 +435,50 @@ pl_tex gl_tex_create(pl_gpu gpu, const struct pl_tex_params *params)
         }
 
         if (params->host_readable && p->gles_ver) {
-            GLint read_type = 0, read_fmt = 0;
-            gl->GetIntegerv(GL_IMPLEMENTATION_COLOR_READ_TYPE, &read_type);
-            gl->GetIntegerv(GL_IMPLEMENTATION_COLOR_READ_FORMAT, &read_fmt);
-            if (read_type != tex_gl->type || read_fmt != tex_gl->format) {
-                gl->BindFramebuffer(target, 0);
-                PL_ERR(gpu, "Trying to create host_readable texture whose "
-                       "implementation-defined pixel read format "
-                       "(type=0x%X, fmt=0x%X) does not match the texture's "
-                       "internal format (type=0x%X, fmt=0x%X)! This is a "
-                       "GLES/driver limitation, there's little we can do "
-                       "about it.",
-                       read_type, read_fmt, tex_gl->type, tex_gl->format);
-                goto error;
+            // Check cached readback probe results first
+            bool found_cached = false;
+            for (int i = 0; i < p->num_readback_cached; i++) {
+                if (p->readback_cache[i].iformat == tex_gl->iformat) {
+                    found_cached = true;
+                    if (!p->readback_cache[i].readable) {
+                        gl->BindFramebuffer(target, 0);
+                        PL_ERR(gpu, "Texture format not supported for "
+                               "readback (cached, GLES/driver limitation)");
+                        goto error;
+                    }
+                    break;
+                }
+            }
+
+            if (!found_cached) {
+                GLint read_type = 0, read_fmt = 0;
+                gl->GetIntegerv(GL_IMPLEMENTATION_COLOR_READ_TYPE, &read_type);
+                gl->GetIntegerv(GL_IMPLEMENTATION_COLOR_READ_FORMAT, &read_fmt);
+                bool readable = (read_type == tex_gl->type &&
+                                 read_fmt == tex_gl->format);
+
+                // Cache the result
+                if (p->num_readback_cached < (int) PL_ARRAY_SIZE(p->readback_cache)) {
+                    p->readback_cache[p->num_readback_cached++] =
+                        (struct gl_readback_entry) {
+                            .iformat = tex_gl->iformat,
+                            .read_type = read_type,
+                            .read_format = read_fmt,
+                            .readable = readable,
+                        };
+                }
+
+                if (!readable) {
+                    gl->BindFramebuffer(target, 0);
+                    PL_ERR(gpu, "Trying to create host_readable texture "
+                           "whose implementation-defined pixel read format "
+                           "(type=0x%X, fmt=0x%X) does not match the "
+                           "texture's internal format (type=0x%X, "
+                           "fmt=0x%X)! This is a GLES/driver limitation, "
+                           "there's little we can do about it.",
+                           read_type, read_fmt, tex_gl->type, tex_gl->format);
+                    goto error;
+                }
             }
         }
 
@@ -640,6 +673,8 @@ pl_tex pl_opengl_wrap(pl_gpu gpu, const struct pl_opengl_wrap_params *params)
         .iformat = glfmt->ifmt,
         .format = glfmt->fmt,
         .type = glfmt->type,
+        .cached_filter = -1,
+        .cached_wrap = -1,
         .fd = -1,
     };
 
@@ -917,19 +952,27 @@ bool gl_tex_upload(pl_gpu gpu, const struct pl_tex_transfer_params *params)
     int stride_h = params->depth_pitch / params->row_pitch;
 
     int dims = pl_tex_params_dimension(tex->params);
-    if (dims > 1)
+    bool changed_alignment = false, changed_row_length = false,
+         changed_image_height = false;
+
+    if (dims > 1) {
         gl->PixelStorei(GL_UNPACK_ALIGNMENT, get_alignment(params->row_pitch));
+        changed_alignment = true;
+    }
 
     int rows = pl_rect_h(params->rc);
     if (misaligned) {
         rows = 1;
     } else if (stride_w != pl_rect_w(params->rc)) {
         gl->PixelStorei(GL_UNPACK_ROW_LENGTH, stride_w);
+        changed_row_length = true;
     }
 
     int imgs = pl_rect_d(params->rc);
-    if (stride_h != pl_rect_h(params->rc) || rows < stride_h)
+    if (stride_h != pl_rect_h(params->rc) || rows < stride_h) {
         gl->PixelStorei(GL_UNPACK_IMAGE_HEIGHT, stride_h);
+        changed_image_height = true;
+    }
 
     gl->BindTexture(tex_gl->target, tex_gl->texture);
     gl_timer_begin(gpu, params->timer);
@@ -963,9 +1006,12 @@ bool gl_tex_upload(pl_gpu gpu, const struct pl_tex_transfer_params *params)
 
     gl_timer_end(gpu, params->timer);
     gl->BindTexture(tex_gl->target, 0);
-    gl->PixelStorei(GL_UNPACK_ALIGNMENT, 4);
-    gl->PixelStorei(GL_UNPACK_ROW_LENGTH, 0);
-    gl->PixelStorei(GL_UNPACK_IMAGE_HEIGHT, 0);
+    if (changed_alignment)
+        gl->PixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    if (changed_row_length)
+        gl->PixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+    if (changed_image_height)
+        gl->PixelStorei(GL_UNPACK_IMAGE_HEIGHT, 0);
 
     if (buf) {
         gl->BindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
@@ -1039,14 +1085,18 @@ bool gl_tex_download(pl_gpu gpu, const struct pl_tex_transfer_params *params)
 
     if (tex_gl->fbo || tex_gl->wrapped_fb) {
         // We can use a more efficient path when we have an FBO available
-        if (dims > 1)
+        bool changed_alignment = false, changed_row_length = false;
+        if (dims > 1) {
             gl->PixelStorei(GL_PACK_ALIGNMENT, get_alignment(params->row_pitch));
+            changed_alignment = true;
+        }
 
         int rows = pl_rect_h(params->rc);
         if (misaligned) {
             rows = 1;
         } else if (stride_w != tex->params.w) {
             gl->PixelStorei(GL_PACK_ROW_LENGTH, stride_w);
+            changed_row_length = true;
         }
 
         // No 3D framebuffers
@@ -1062,8 +1112,10 @@ bool gl_tex_download(pl_gpu gpu, const struct pl_tex_transfer_params *params)
             dst += params->row_pitch * rows;
         }
         gl->BindFramebuffer(target, 0);
-        gl->PixelStorei(GL_PACK_ALIGNMENT, 4);
-        gl->PixelStorei(GL_PACK_ROW_LENGTH, 0);
+        if (changed_alignment)
+            gl->PixelStorei(GL_PACK_ALIGNMENT, 4);
+        if (changed_row_length)
+            gl->PixelStorei(GL_PACK_ROW_LENGTH, 0);
     } else if (is_copy) {
         // We're downloading the entire texture
         gl->BindTexture(tex_gl->target, tex_gl->texture);

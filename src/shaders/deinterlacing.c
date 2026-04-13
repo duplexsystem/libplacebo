@@ -221,10 +221,7 @@ void pl_shader_deinterlace(pl_shader sh, const struct pl_deinterlace_source *src
                   "float mini = min(p2 - max(p3, p1), max(p0 - p1, p4 - p3));   \n"
                   "diff = max(diff, max(mini, -maxi));                          \n");
         }
-        GLSLH("    if (spatial_pred > p2 + diff)                                \n"
-              "      spatial_pred = p2 + diff;                                  \n"
-              "    if (spatial_pred < p2 - diff)                                \n"
-              "      spatial_pred = p2 - diff;                                  \n"
+        GLSLH("    spatial_pred = clamp(spatial_pred, p2 - diff, p2 + diff);    \n"
               "    return spatial_pred;                                         \n"
               "}                                                                \n");
 

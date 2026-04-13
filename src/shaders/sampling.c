@@ -353,9 +353,9 @@ bool pl_shader_sample_bicubic(pl_shader sh, const struct pl_sample_src *src)
     vec4 p = pos.xyxy + $pt.xyxy * h;               \
     vec4 c00 = textureLod($tex, p.xy, 0.0);         \
     vec4 c01 = textureLod($tex, p.xw, 0.0);         \
-    vec4 c0 = mix(c01, c00, g.y);                   \
     vec4 c10 = textureLod($tex, p.zy, 0.0);         \
     vec4 c11 = textureLod($tex, p.zw, 0.0);         \
+    vec4 c0 = mix(c01, c00, g.y);                   \
     vec4 c1 = mix(c11, c10, g.y);                   \
     color = ${float:scale} * mix(c1, c0, g.x);      \
     }
@@ -409,11 +409,14 @@ bool pl_shader_sample_gaussian(pl_shader sh, const struct pl_sample_src *src)
     vec2 size = vec2(textureSize($tex, 0));         \
     vec2 off  = -fract(pos * size + vec2(0.5));     \
     vec2 off2 = -2.0 * off * off;                   \
-    /* compute gaussian weights */                  \
-    vec2 w0 = exp(off2 + 4.0 * off - vec2(2.0));    \
+    /* compute gaussian weights (factored to reduce exp calls) */ \
     vec2 w1 = exp(off2);                            \
-    vec2 w2 = exp(off2 - 4.0 * off - vec2(2.0));    \
-    vec2 w3 = exp(off2 - 8.0 * off - vec2(8.0));    \
+    vec2 e4 = exp(4.0 * off);                       \
+    const float E2 = exp(-2.0);                     \
+    const float E8 = exp(-8.0);                     \
+    vec2 w0 = w1 * e4 * E2;                         \
+    vec2 w2 = w1 / e4 * E2;                         \
+    vec2 w3 = w1 / (e4 * e4) * E8;                  \
     vec4 g = vec4(w0 + w1, w2 + w3);                \
     vec4 h = vec4(w1, w3) / g;                      \
     h.xy -= vec2(1.0);                              \
@@ -423,9 +426,9 @@ bool pl_shader_sample_gaussian(pl_shader sh, const struct pl_sample_src *src)
     vec4 p = pos.xyxy + $pt.xyxy * (h + off.xyxy);  \
     vec4 c00 = textureLod($tex, p.xy, 0.0);         \
     vec4 c01 = textureLod($tex, p.xw, 0.0);         \
-    vec4 c0 = mix(c01, c00, g.y);                   \
     vec4 c10 = textureLod($tex, p.zy, 0.0);         \
     vec4 c11 = textureLod($tex, p.zw, 0.0);         \
+    vec4 c0 = mix(c01, c00, g.y);                   \
     vec4 c1 = mix(c11, c10, g.y);                   \
     color = ${float:scale} * mix(c1, c0, g.x);      \
     }

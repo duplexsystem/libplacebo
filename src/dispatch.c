@@ -209,14 +209,15 @@ static bool add_pass_var(pl_dispatch dp, void *tmp, struct pass *pass,
     int num_locs = sv->var.dim_v * sv->var.dim_m * sv->var.dim_a;
     bool can_var = pass->num_var_locs + num_locs <= gpu->limits.max_variable_comps;
 
-    // Attempt using uniform buffer next. The GLSL version 440 check is due
-    // to explicit offsets on UBO entries. In theory we could leave away
-    // the offsets and support UBOs for older GL as well, but this is a nice
-    // safety net for driver bugs (and also rules out potentially buggy drivers)
+    // Attempt using uniform buffer next. Explicit layout(offset=N) on UBO
+    // entries requires GLSL 4.40 (desktop GL) or GLSL ES 3.10 (GLES 3.1+).
+    // We gate on these versions as a safety net for driver correctness.
     // Also avoid UBOs for highly dynamic stuff since that requires synchronizing
     // the UBO writes every frame
+    bool has_ubo_offsets = gpu->glsl.version >= 440 ||
+                           (gpu->glsl.gles && gpu->glsl.version >= 310);
     bool try_ubo = !can_var || !sv->dynamic;
-    if (try_ubo && gpu->glsl.version >= 440 && gpu->limits.max_ubo_size) {
+    if (try_ubo && has_ubo_offsets && gpu->limits.max_ubo_size) {
         if (sh_buf_desc_append(tmp, gpu, &pass->ubo_desc, &pv->layout, sv->var)) {
             pv->type = PASS_VAR_UBO;
             return true;
@@ -274,7 +275,8 @@ static void add_buffer_vars(pl_dispatch dp, void *tmp, pl_str_builder body,
     for (int i = 0; i < num; i++) {
         const struct pl_buffer_var *bv = dp->buf_tmp.elem[i];
         // Add an explicit offset wherever possible
-        if (dp->gpu->glsl.version >= 440)
+        if (dp->gpu->glsl.version >= 440 ||
+            (dp->gpu->glsl.gles && dp->gpu->glsl.version >= 310))
             ADD(body, "    layout(offset=%zu) ", bv->layout.offset);
         add_var(body, &bv->var);
     }

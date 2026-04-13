@@ -241,6 +241,27 @@ pl_gpu pl_gpu_create_gl(pl_log log, pl_opengl pl_gl, const struct pl_opengl_para
         gpu->limits.align_host_ptr = get_page_size();
     }
 
+    // Detect KHR_no_error context. When active, glGetError() is a guaranteed
+    // no-op and we can skip the error drain in gl_check_err entirely —
+    // eliminating ~40+ function calls per render pass on tile-based GPUs.
+    if (p->gles_ver) {
+        // GLES: GL_CONTEXT_FLAGS is unavailable; query the EGL context attribute.
+#ifndef EGL_CONTEXT_OPENGL_NO_ERROR_KHR
+#define EGL_CONTEXT_OPENGL_NO_ERROR_KHR 0x31B3
+#endif
+        EGLint noError = EGL_FALSE;
+        if (p->egl_dpy && p->egl_ctx)
+            eglQueryContext(p->egl_dpy, p->egl_ctx, EGL_CONTEXT_OPENGL_NO_ERROR_KHR, &noError);
+        p->no_error = (noError == EGL_TRUE);
+    } else {
+        // Desktop GL: query GL_CONTEXT_FLAGS for the no-error bit.
+        GLint ctxFlags = 0;
+        gl->GetIntegerv(GL_CONTEXT_FLAGS, &ctxFlags);
+        p->no_error = (ctxFlags & GL_CONTEXT_FLAG_NO_ERROR_BIT) != 0;
+    }
+    if (p->no_error)
+        PL_INFO(gpu, "KHR_no_error context detected — gl_check_err fast path enabled");
+
     // Cache some internal capability checks
     p->has_vao = gl_test_ext(gpu, "GL_ARB_vertex_array_object", 30, 30);
     p->has_invalidate_fb = gl_test_ext(gpu, "GL_ARB_invalidate_subdata", 43, 30);
@@ -618,6 +639,7 @@ static void gl_gpu_flush(pl_gpu gpu)
 
     gl->Flush();
     gl_check_err(gpu, "gl_gpu_flush");
+    gl_poll_callbacks(gpu);
     RELEASE_CURRENT();
 }
 
@@ -629,6 +651,7 @@ static void gl_gpu_finish(pl_gpu gpu)
 
     gl->Finish();
     gl_check_err(gpu, "gl_gpu_finish");
+    gl_poll_callbacks(gpu);
     RELEASE_CURRENT();
 }
 

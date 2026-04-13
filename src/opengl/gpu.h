@@ -59,6 +59,7 @@ struct pl_gl {
     bool has_readback;
     bool has_egl_storage;
     bool has_egl_import;
+    bool no_error; // KHR_no_error context — glGetError() is a no-op
     int gather_comps;
 
     // GLES readback format probe cache (avoids per-texture GetIntegerv)

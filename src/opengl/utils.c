@@ -70,8 +70,16 @@ void gl_poll_callbacks(pl_gpu gpu)
 
 bool gl_check_err(pl_gpu gpu, const char *fun)
 {
-    const gl_funcs *gl = gl_funcs_get(gpu);
     struct pl_gl *p = PL_PRIV(gpu);
+
+    // KHR_no_error context: glGetError() always returns GL_NO_ERROR and the
+    // driver never generates errors. Skip entirely — no error drain, no
+    // callback polling. Callers that need callback draining (gl_pass_run,
+    // gl_gpu_flush, gl_gpu_finish) call gl_poll_callbacks explicitly.
+    if (p->no_error)
+        return true;
+
+    const gl_funcs *gl = gl_funcs_get(gpu);
     bool ret = true;
 
     while (true) {

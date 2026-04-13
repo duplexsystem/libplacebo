@@ -677,5 +677,6 @@ void gl_pass_run(pl_gpu gpu, const struct pl_pass_run_params *params)
 
     gl->UseProgram(0);
     gl_check_err(gpu, "gl_pass_run");
+    gl_poll_callbacks(gpu); // drain completed async fences once per pass
     RELEASE_CURRENT();
 }

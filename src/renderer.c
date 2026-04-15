@@ -2106,33 +2106,25 @@ static pl_tex get_feature_map(struct pass_state *pass)
     const float ratio = cparams->contrast_smoothness;
     const int cr_w = ceilf(abs(pl_rect_w(pass->dst_rect)) / ratio);
     const int cr_h = ceilf(abs(pl_rect_h(pass->dst_rect)) / ratio);
-    pl_tex inter_tex = get_fbo(pass, img->w, img->h, NULL, 1, PL_DEBUG_TAG);
-    pl_tex out_tex   = get_fbo(pass, cr_w, cr_h, NULL, 1, PL_DEBUG_TAG);
-    if (!inter_tex || !out_tex)
+    pl_tex out_tex = get_fbo(pass, cr_w, cr_h, NULL, 1, PL_DEBUG_TAG);
+    if (!out_tex)
         goto error;
 
-    pl_shader sh = pl_dispatch_begin(rr->dp);
-    pl_shader_sample_direct(sh, pl_sample_src( .tex = img->tex ));
-    pl_shader_extract_features(sh, img->color);
-    bool ok = pl_dispatch_finish(rr->dp, pl_dispatch_params(
-        .shader = &sh,
-        .target = inter_tex,
-    ));
-    if (!ok)
-        goto error;
-
+    // Sample source directly at downsampled resolution, then extract
+    // features inline — merges two dispatches into one and eliminates
+    // a full-resolution intermediate FBO allocation
     const struct pl_sample_src src = {
-        .tex          = inter_tex,
+        .tex          = img->tex,
         .rect         = img->rect,
         .address_mode = PL_TEX_ADDRESS_MIRROR,
-        .components   = 1,
         .new_w        = cr_w,
         .new_h        = cr_h,
     };
 
-    sh = pl_dispatch_begin(rr->dp);
+    pl_shader sh = pl_dispatch_begin(rr->dp);
     dispatch_sampler(pass, sh, &rr->sampler_contrast, SAMPLER_LOWPASS, out_tex, &src);
-    ok = pl_dispatch_finish(rr->dp, pl_dispatch_params(
+    pl_shader_extract_features(sh, img->color);
+    bool ok = pl_dispatch_finish(rr->dp, pl_dispatch_params(
         .shader = &sh,
         .target = out_tex,
     ));

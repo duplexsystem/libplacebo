@@ -33,10 +33,17 @@ void gl_tex_destroy(pl_gpu gpu, pl_tex tex)
     }
 
     struct pl_tex_gl *tex_gl = PL_PRIV(tex);
+    struct pl_gl *p = PL_PRIV(gpu);
+
+    // Invalidate FBO state cache if this texture's FBO is currently bound
+    if (tex_gl->fbo && p->current_fbo == tex_gl->fbo) {
+        gl->BindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+        p->current_fbo = 0;
+    }
+
     if (tex_gl->fbo && !tex_gl->wrapped_fb)
         gl->DeleteFramebuffers(1, &tex_gl->fbo);
     if (tex_gl->image) {
-        struct pl_gl *p = PL_PRIV(gpu);
         eglDestroyImageKHR(p->egl_dpy, tex_gl->image);
     }
     if (!tex_gl->wrapped_tex)
@@ -353,25 +360,72 @@ pl_tex gl_tex_create(pl_gpu gpu, const struct pl_tex_params *params)
         if (!gl_tex_import(gpu, params->import_handle, &params->shared_mem, tex))
             goto error;
     } else {
-        gl->PixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        // Use immutable texture storage when available (GL 4.2+ / GLES 3.0+).
+        // This allows the driver to optimize memory layout upfront and skip
+        // per-draw texture completeness validation.
+        bool use_storage = (dims >= 2)
+            ? (p->gl_ver >= 42 || p->gles_ver >= 30)
+            : (p->gl_ver >= 42); // 1D textures are desktop-only
 
-        switch (dims) {
-        case 1:
-            gl->TexImage1D(tex_gl->target, 0, tex_gl->iformat, params->w, 0,
-                           tex_gl->format, tex_gl->type, params->initial_data);
-            break;
-        case 2:
-            gl->TexImage2D(tex_gl->target, 0, tex_gl->iformat, params->w, params->h,
-                           0, tex_gl->format, tex_gl->type, params->initial_data);
-            break;
-        case 3:
-            gl->TexImage3D(tex_gl->target, 0, tex_gl->iformat, params->w, params->h,
-                           params->d, 0, tex_gl->format, tex_gl->type,
-                           params->initial_data);
-            break;
+        if (use_storage) {
+            switch (dims) {
+            case 1:
+                gl->TexStorage1D(tex_gl->target, 1, tex_gl->iformat, params->w);
+                break;
+            case 2:
+                gl->TexStorage2D(tex_gl->target, 1, tex_gl->iformat,
+                                 params->w, params->h);
+                break;
+            case 3:
+                gl->TexStorage3D(tex_gl->target, 1, tex_gl->iformat,
+                                 params->w, params->h, params->d);
+                break;
+            }
+
+            if (params->initial_data) {
+                gl->PixelStorei(GL_UNPACK_ALIGNMENT, 1);
+                switch (dims) {
+                case 1:
+                    gl->TexSubImage1D(tex_gl->target, 0, 0, params->w,
+                                      tex_gl->format, tex_gl->type,
+                                      params->initial_data);
+                    break;
+                case 2:
+                    gl->TexSubImage2D(tex_gl->target, 0, 0, 0,
+                                      params->w, params->h,
+                                      tex_gl->format, tex_gl->type,
+                                      params->initial_data);
+                    break;
+                case 3:
+                    gl->TexSubImage3D(tex_gl->target, 0, 0, 0, 0,
+                                      params->w, params->h, params->d,
+                                      tex_gl->format, tex_gl->type,
+                                      params->initial_data);
+                    break;
+                }
+                gl->PixelStorei(GL_UNPACK_ALIGNMENT, 4);
+            }
+        } else {
+            gl->PixelStorei(GL_UNPACK_ALIGNMENT, 1);
+
+            switch (dims) {
+            case 1:
+                gl->TexImage1D(tex_gl->target, 0, tex_gl->iformat, params->w, 0,
+                               tex_gl->format, tex_gl->type, params->initial_data);
+                break;
+            case 2:
+                gl->TexImage2D(tex_gl->target, 0, tex_gl->iformat, params->w, params->h,
+                               0, tex_gl->format, tex_gl->type, params->initial_data);
+                break;
+            case 3:
+                gl->TexImage3D(tex_gl->target, 0, tex_gl->iformat, params->w, params->h,
+                               params->d, 0, tex_gl->format, tex_gl->type,
+                               params->initial_data);
+                break;
+            }
+
+            gl->PixelStorei(GL_UNPACK_ALIGNMENT, 4);
         }
-
-        gl->PixelStorei(GL_UNPACK_ALIGNMENT, 4);
     }
 
     if (params->export_handle) {
@@ -826,6 +880,7 @@ void gl_tex_invalidate(pl_gpu gpu, pl_tex tex)
         gl->BindFramebuffer(GL_DRAW_FRAMEBUFFER, tex_gl->fbo);
         gl->InvalidateFramebuffer(GL_DRAW_FRAMEBUFFER, 1, &attachment);
         gl->BindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+        p->current_fbo = 0;
     }
 
     gl_check_err(gpu, "gl_tex_invalidate");
@@ -873,6 +928,7 @@ void gl_tex_clear_ex(pl_gpu gpu, pl_tex tex, const union pl_clear_color color)
     }
 
     gl->BindFramebuffer(target, 0);
+    p->current_fbo = 0;
     gl_check_err(gpu, "gl_tex_clear");
     RELEASE_CURRENT();
 }
@@ -883,6 +939,7 @@ void gl_tex_blit(pl_gpu gpu, const struct pl_tex_blit_params *params)
     if (!MAKE_CURRENT())
         return;
 
+    struct pl_gl *p = PL_PRIV(gpu);
     struct pl_tex_gl *src_gl = PL_PRIV(params->src);
     struct pl_tex_gl *dst_gl = PL_PRIV(params->dst);
 
@@ -903,6 +960,7 @@ void gl_tex_blit(pl_gpu gpu, const struct pl_tex_blit_params *params)
 
     gl->BindFramebuffer(GL_READ_FRAMEBUFFER, 0);
     gl->BindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+    p->current_fbo = 0;
     gl_check_err(gpu, "gl_tex_blit");
     RELEASE_CURRENT();
 }
@@ -975,6 +1033,17 @@ bool gl_tex_upload(pl_gpu gpu, const struct pl_tex_transfer_params *params)
     }
 
     gl->BindTexture(tex_gl->target, tex_gl->texture);
+
+    // Invalidate before full-texture upload to avoid implicit sync on
+    // tile-based GPUs (driver can orphan the old backing store)
+    if (p->has_invalidate_tex &&
+        params->rc.x0 == 0 && params->rc.x1 == tex->params.w &&
+        params->rc.y0 == 0 && params->rc.y1 == PL_DEF(tex->params.h, 1) &&
+        params->rc.z0 == 0 && params->rc.z1 == PL_DEF(tex->params.d, 1))
+    {
+        gl->InvalidateTexImage(tex_gl->texture, 0);
+    }
+
     gl_timer_begin(gpu, params->timer);
 
     switch (dims) {

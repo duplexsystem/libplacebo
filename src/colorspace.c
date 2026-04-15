@@ -416,31 +416,50 @@ output:
     pl_unreachable();
 }
 
-static inline bool pl_hdr_bezier_equal(const struct pl_hdr_bezier *a,
-                                       const struct pl_hdr_bezier *b)
+// Approximate float comparison for dynamic HDR metadata hysteresis.
+// Avoids triggering LUT regeneration from sub-perceptual metadata jitter.
+static inline bool float_near(float a, float b, float rel_tol)
 {
-    return a->target_luma == b->target_luma &&
-           a->knee_x      == b->knee_x &&
-           a->knee_y      == b->knee_y &&
-           a->num_anchors == b->num_anchors &&
-           !memcmp(a->anchors, b->anchors, sizeof(a->anchors[0]) * a->num_anchors);
+    float diff = fabsf(a - b);
+    float mag = fmaxf(fabsf(a), fabsf(b));
+    return diff <= rel_tol * fmaxf(mag, 1e-6f);
+}
+
+static inline bool pl_hdr_bezier_near(const struct pl_hdr_bezier *a,
+                                      const struct pl_hdr_bezier *b)
+{
+    if (a->num_anchors != b->num_anchors)
+        return false;
+    if (!float_near(a->target_luma, b->target_luma, 0.005f) ||
+        !float_near(a->knee_x, b->knee_x, 0.005f) ||
+        !float_near(a->knee_y, b->knee_y, 0.005f))
+        return false;
+    for (int i = 0; i < a->num_anchors; i++) {
+        if (!float_near(a->anchors[i], b->anchors[i], 0.005f))
+            return false;
+    }
+    return true;
 }
 
 bool pl_hdr_metadata_equal(const struct pl_hdr_metadata *a,
                            const struct pl_hdr_metadata *b)
 {
+    // Dynamic HDR10+ per-frame fields use approximate comparison (0.5%
+    // relative tolerance) to avoid per-frame LUT regeneration from
+    // sub-perceptual metadata jitter. Static per-stream fields (max_cll,
+    // max_fall, min_luma, primaries) use exact comparison.
     return pl_raw_primaries_equal(&a->prim, &b->prim) &&
            a->min_luma == b->min_luma &&
-           a->max_luma == b->max_luma &&
+           float_near(a->max_luma, b->max_luma, 0.005f) &&
            a->max_cll  == b->max_cll  &&
            a->max_fall == b->max_fall &&
-           a->scene_max[0] == b->scene_max[0] &&
-           a->scene_max[1] == b->scene_max[1] &&
-           a->scene_max[2] == b->scene_max[2] &&
-           a->scene_avg == b->scene_avg &&
-           pl_hdr_bezier_equal(&a->ootf, &b->ootf) &&
-           a->max_pq_y == b->max_pq_y &&
-           a->avg_pq_y == b->avg_pq_y;
+           float_near(a->scene_max[0], b->scene_max[0], 0.005f) &&
+           float_near(a->scene_max[1], b->scene_max[1], 0.005f) &&
+           float_near(a->scene_max[2], b->scene_max[2], 0.005f) &&
+           float_near(a->scene_avg, b->scene_avg, 0.005f) &&
+           pl_hdr_bezier_near(&a->ootf, &b->ootf) &&
+           float_near(a->max_pq_y, b->max_pq_y, 0.005f) &&
+           float_near(a->avg_pq_y, b->avg_pq_y, 0.005f);
 }
 
 void pl_hdr_metadata_merge(struct pl_hdr_metadata *orig,

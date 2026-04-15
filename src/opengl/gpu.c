@@ -192,7 +192,9 @@ pl_gpu pl_gpu_create_gl(pl_log log, pl_opengl pl_gl, const struct pl_opengl_para
             get(GL_MAX_SHADER_STORAGE_BLOCK_SIZE, &limits->max_ssbo_size);
         }
         limits->max_vbo_size = limits->max_buf_size; // No additional restrictions
-        if (gl_test_ext(gpu, "GL_ARB_buffer_storage", 44, 0)) {
+        if (gl_test_ext(gpu, "GL_ARB_buffer_storage", 44, 0) ||
+            gl_test_ext(gpu, "GL_EXT_buffer_storage", 0, 0))
+        {
             const char *vendor = (char *) gl->GetString(GL_VENDOR);
             limits->max_mapped_size = limits->max_buf_size;
             limits->max_mapped_vram = limits->max_buf_size;
@@ -390,7 +392,10 @@ pl_buf gl_buf_create(pl_gpu gpu, const struct pl_buf_params *params)
     gl->GenBuffers(1, &buf_gl->buffer);
     gl->BindBuffer(target, buf_gl->buffer);
 
-    if (gl_test_ext(gpu, "GL_ARB_buffer_storage", 44, 0) && !import) {
+    bool has_buffer_storage = gl_test_ext(gpu, "GL_ARB_buffer_storage", 44, 0) ||
+                              gl_test_ext(gpu, "GL_EXT_buffer_storage", 0, 0);
+
+    if (has_buffer_storage && !import) {
 
         GLbitfield mapflags = 0, storflags = 0;
         if (params->host_writable)
@@ -402,7 +407,11 @@ pl_buf gl_buf_create(pl_gpu gpu, const struct pl_buf_params *params)
         if (params->memory_type == PL_BUF_MEM_HOST)
             storflags |= GL_CLIENT_STORAGE_BIT; // hopefully this works
 
-        gl->BufferStorage(target, total_size, data, storflags | mapflags);
+        if (gl->BufferStorage) {
+            gl->BufferStorage(target, total_size, data, storflags | mapflags);
+        } else {
+            gl->BufferStorageEXT(target, total_size, data, storflags | mapflags);
+        }
 
         if (params->host_mapped) {
             buf_gl->mapped = true;

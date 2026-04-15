@@ -246,11 +246,12 @@ void pl_shader_dovi_reshape(pl_shader sh, const struct pl_dovi_metadata *data)
         }
 
         if (has_mmr && has_poly) {
-            GLSL("if (coeffs.w == 0.0) { \n");
-            reshape_poly(sh);
-            GLSL("} else { \n");
+            // Branchless: compute both poly and MMR, select via mix
+            // to avoid GPU warp divergence with mixed coefficients
+            GLSL("{ float s_poly = (coeffs.z * s + coeffs.y) * s + coeffs.x; \n");
             reshape_mmr(sh, mmr, mmr_single, min_order, max_order);
-            GLSL("} \n");
+            GLSL("s = mix(s_poly, s, step(0.5, abs(coeffs.w))); \n"
+                 "} \n");
         } else if (has_poly) {
             reshape_poly(sh);
         } else {
@@ -360,21 +361,21 @@ void pl_shader_decode_color(pl_shader sh, struct pl_color_repr *repr,
 
         GLSL("const vec3 pq_c1 = vec3(%f), pq_c2 = vec3(%f), pq_c3 = vec3(%f); \n"
              // PQ EOTF
-             "color.rgb = pow(max(color.rgb, 0.0), vec3(1.0/%f));           \n"
+             "color.rgb = exp2(vec3(%f) * log2(max(color.rgb, vec3(1e-10)))); \n"
              "color.rgb = max(color.rgb - pq_c1, 0.0)                      \n"
              "             / (pq_c2 - pq_c3 * color.rgb);                  \n"
-             "color.rgb = pow(color.rgb, vec3(1.0/%f));                     \n"
+             "color.rgb = exp2(vec3(%f) * log2(max(color.rgb, vec3(1e-10)))); \n"
              // LMS matrix
              "color.rgb = mat3( 3.43661, -0.79133, -0.0259499,              \n"
              "                 -2.50645,  1.98360, -0.0989137,              \n"
              "                  0.06984, -0.192271, 1.12486) * color.rgb;   \n"
              // PQ OETF
-             "color.rgb = pow(max(color.rgb, 0.0), vec3(%f));               \n"
+             "color.rgb = exp2(vec3(%f) * log2(max(color.rgb, vec3(1e-10)))); \n"
              "color.rgb = (pq_c1 + pq_c2 * color.rgb)                      \n"
              "             / (vec3(1.0) + pq_c3 * color.rgb);              \n"
-             "color.rgb = pow(color.rgb, vec3(%f));                         \n",
+             "color.rgb = exp2(vec3(%f) * log2(max(color.rgb, vec3(1e-10)))); \n",
              PQ_C1, PQ_C2, PQ_C3,
-             PQ_M2, PQ_M1,
+             1.0/PQ_M2, 1.0/PQ_M1,
              PQ_M1, PQ_M2);
         break;
 
@@ -413,18 +414,18 @@ void pl_shader_decode_color(pl_shader sh, struct pl_color_repr *repr,
         });
 
         // PQ EOTF
-        GLSL("color.rgb = pow(max(color.rgb, 0.0), vec3(1.0/%f));   \n"
+        GLSL("color.rgb = exp2(vec3(%f) * log2(max(color.rgb, vec3(1e-10)))); \n"
              "color.rgb = max(color.rgb - vec3(%f), 0.0)            \n"
              "             / (vec3(%f) - vec3(%f) * color.rgb);     \n"
-             "color.rgb = pow(color.rgb, vec3(1.0/%f));             \n",
-             PQ_M2, PQ_C1, PQ_C2, PQ_C3, PQ_M1);
+             "color.rgb = exp2(vec3(%f) * log2(max(color.rgb, vec3(1e-10)))); \n",
+             1.0/PQ_M2, PQ_C1, PQ_C2, PQ_C3, 1.0/PQ_M1);
         // LMS matrix
         GLSL("color.rgb = "$" * color.rgb; \n", mat);
         // PQ OETF
-        GLSL("color.rgb = pow(max(color.rgb, 0.0), vec3(%f));       \n"
+        GLSL("color.rgb = exp2(vec3(%f) * log2(max(color.rgb, vec3(1e-10)))); \n"
              "color.rgb = (vec3(%f) + vec3(%f) * color.rgb)         \n"
              "             / (vec3(1.0) + vec3(%f) * color.rgb);    \n"
-             "color.rgb = pow(color.rgb, vec3(%f));                 \n",
+             "color.rgb = exp2(vec3(%f) * log2(max(color.rgb, vec3(1e-10)))); \n",
              PQ_M1, PQ_C1, PQ_C2, PQ_C3, PQ_M2);
         break;
 #else
@@ -502,21 +503,21 @@ void pl_shader_encode_color(pl_shader sh, const struct pl_color_repr *repr)
     case PL_COLOR_SYSTEM_BT_2100_PQ:;
         GLSL("const vec3 pq_c1 = vec3(%f), pq_c2 = vec3(%f), pq_c3 = vec3(%f); \n"
              // PQ EOTF
-             "color.rgb = pow(max(color.rgb, 0.0), vec3(1.0/%f));           \n"
+             "color.rgb = exp2(vec3(%f) * log2(max(color.rgb, vec3(1e-10)))); \n"
              "color.rgb = max(color.rgb - pq_c1, 0.0)                      \n"
              "             / (pq_c2 - pq_c3 * color.rgb);                  \n"
-             "color.rgb = pow(color.rgb, vec3(1.0/%f));                     \n"
+             "color.rgb = exp2(vec3(%f) * log2(max(color.rgb, vec3(1e-10)))); \n"
              // LMS matrix
              "color.rgb = mat3(0.412109, 0.166748, 0.024170,                \n"
              "                 0.523925, 0.720459, 0.075440,                \n"
              "                 0.063965, 0.112793, 0.900394) * color.rgb;   \n"
              // PQ OETF
-             "color.rgb = pow(color.rgb, vec3(%f));                         \n"
+             "color.rgb = exp2(vec3(%f) * log2(max(color.rgb, vec3(1e-10)))); \n"
              "color.rgb = (pq_c1 + pq_c2 * color.rgb)                      \n"
              "             / (vec3(1.0) + pq_c3 * color.rgb);              \n"
-             "color.rgb = pow(color.rgb, vec3(%f));                         \n",
+             "color.rgb = exp2(vec3(%f) * log2(max(color.rgb, vec3(1e-10)))); \n",
              PQ_C1, PQ_C2, PQ_C3,
-             PQ_M2, PQ_M1,
+             1.0/PQ_M2, 1.0/PQ_M1,
              PQ_M1, PQ_M2);
         break;
 
@@ -668,14 +669,14 @@ void pl_shader_linearize(pl_shader sh, const struct pl_color_space *csp)
         GLSL("color.rgb = vec3(52.37/48.0) * pow(color.rgb, vec3(2.6));\n");
         goto scale_out;
     case PL_COLOR_TRC_PQ:
-        GLSL("color.rgb = pow(color.rgb, vec3(1.0/%f));         \n"
+        GLSL("color.rgb = exp2(vec3(%f) * log2(max(color.rgb, vec3(1e-10)))); \n"
              "color.rgb = max(color.rgb - vec3(%f), 0.0)        \n"
              "             / (vec3(%f) - vec3(%f) * color.rgb); \n"
-             "color.rgb = pow(color.rgb, vec3(1.0/%f));         \n"
+             "color.rgb = exp2(vec3(%f) * log2(max(color.rgb, vec3(1e-10)))); \n"
              // PQ's output range is 0-10000, but we need it to be relative to
              // to PL_COLOR_SDR_WHITE instead, so rescale
              "color.rgb *= vec3(%f);                            \n",
-             PQ_M2, PQ_C1, PQ_C2, PQ_C3, PQ_M1, 10000.0 / PL_COLOR_SDR_WHITE);
+             1.0/PQ_M2, PQ_C1, PQ_C2, PQ_C3, 1.0/PQ_M1, 10000.0 / PL_COLOR_SDR_WHITE);
         return;
     case PL_COLOR_TRC_HLG: {
         const float y = 1.2f * powf(1.111f, log2f(csp_max / HLG_REF));
@@ -806,10 +807,10 @@ void pl_shader_delinearize(pl_shader sh, const struct pl_color_space *csp)
         return;
     case PL_COLOR_TRC_PQ:
         GLSL("color.rgb *= vec3(1.0/%f);                         \n"
-             "color.rgb = pow(color.rgb, vec3(%f));              \n"
+             "color.rgb = exp2(vec3(%f) * log2(max(color.rgb, vec3(1e-10)))); \n"
              "color.rgb = (vec3(%f) + vec3(%f) * color.rgb)      \n"
              "             / (vec3(1.0) + vec3(%f) * color.rgb); \n"
-             "color.rgb = pow(color.rgb, vec3(%f));              \n",
+             "color.rgb = exp2(vec3(%f) * log2(max(color.rgb, vec3(1e-10)))); \n",
              10000 / PL_COLOR_SDR_WHITE, PQ_M1, PQ_C1, PQ_C2, PQ_C3, PQ_M2);
         return;
     case PL_COLOR_TRC_HLG: {
@@ -877,9 +878,9 @@ void pl_shader_sigmoidize(pl_shader sh, const struct pl_sigmoid_params *params)
     GLSL("// pl_shader_sigmoidize                                 \n"
          "color.rgb = clamp(color.rgb, 0.0, 1.0);                 \n"
          "color.rgb = vec3("$") - vec3("$") *                     \n"
-         "    log(vec3(1.0) / (color.rgb * vec3("$") + vec3("$")) \n"
+         "    log2(vec3(1.0) / (color.rgb * vec3("$") + vec3("$"))\n"
          "        - vec3(1.0));                                   \n",
-         SH_FLOAT(center), SH_FLOAT(1.0 / slope),
+         SH_FLOAT(center), SH_FLOAT(M_LN2 / slope),
          SH_FLOAT(scale), SH_FLOAT(offset));
 }
 
@@ -898,10 +899,10 @@ void pl_shader_unsigmoidize(pl_shader sh, const struct pl_sigmoid_params *params
     GLSL("// pl_shader_unsigmoidize                                 \n"
          "color.rgb = clamp(color.rgb, 0.0, 1.0);                    \n"
          "color.rgb = vec3("$") /                                    \n"
-         "    (vec3(1.0) + exp(vec3("$") * (vec3("$") - color.rgb))) \n"
+         "    (vec3(1.0) + exp2(vec3("$") * (vec3("$") - color.rgb)))\n"
          "    - vec3("$");                                           \n",
          SH_FLOAT(1.0 / scale),
-         SH_FLOAT(slope), SH_FLOAT(center),
+         SH_FLOAT(slope * M_LOG2E), SH_FLOAT(center),
          SH_FLOAT(offset / scale));
 }
 
@@ -987,6 +988,8 @@ struct sh_color_map_obj {
     // Gamut map state
     struct {
         pl_shader_obj lut;
+        void *tmp;          // persistent temp buffer for LUT fill
+        size_t tmp_size;
     } gamut;
 
     // Peak detection state
@@ -1017,6 +1020,7 @@ static void sh_color_map_uninit(pl_gpu gpu, void *ptr)
     struct sh_color_map_obj *obj = ptr;
     pl_shader_obj_destroy(&obj->tone.lut);
     pl_shader_obj_destroy(&obj->gamut.lut);
+    pl_free(obj->gamut.tmp);
     pl_buf_destroy(gpu, &obj->peak.buf);
     pl_buf_destroy(gpu, &obj->peak.readback);
     memset(obj, 0, sizeof(*obj));
@@ -1290,10 +1294,10 @@ retry_ssbo:
 #pragma GLSL /* Measure luminance as N-bit PQ */                                \
     float luma = dot(${sh_luma_coeffs(sh, &csp)}, color.rgb);                   \
     luma *= ${const float: PL_COLOR_SDR_WHITE / 10000.0};                       \
-    luma = pow(clamp(luma, 0.0, 1.0), ${const float: PQ_M1});                   \
+    luma = exp2(${const float: PQ_M1} * log2(max(clamp(luma, 0.0, 1.0), 1e-10))); \
     luma = (${const float: PQ_C1} + ${const float: PQ_C2} * luma) /             \
            (1.0 + ${const float: PQ_C3} * luma);                                \
-    luma = pow(luma, ${const float: PQ_M2});                                    \
+    luma = exp2(${const float: PQ_M2} * log2(luma));                                    \
     @if (cutoff)                                                                \
         luma *= smoothstep(0.0, ${float: cutoff}, luma);                        \
     uint y_pq = uint(${const float: PQ_MAX} * luma);                            \
@@ -1401,16 +1405,16 @@ void pl_shader_extract_features(pl_shader sh, struct pl_color_space csp)
     // Pre-fold SDR_WHITE/10000 normalization into the matrix on CPU
     pl_matrix3x3 feat_rgb2lms = pl_ipt_rgb2lms(pl_raw_primaries_get(csp.primaries));
     pl_matrix3x3_scale(&feat_rgb2lms, PL_COLOR_SDR_WHITE / 10000.0f);
-    GLSL("// pl_shader_extract_features             \n"
-         "{                                         \n"
-         "vec3 lms = "$" * color.rgb;               \n"
-         "lms = pow(max(lms, 0.0), vec3(%f));       \n"
-         "lms = (vec3(%f) + %f * lms)               \n"
-         "        / (vec3(1.0) + %f * lms);         \n"
-         "lms = pow(lms, vec3(%f));                 \n"
-         "float I = dot(vec3(%f, %f, %f), lms);     \n"
-         "color = vec4(I, 0.0, 0.0, 1.0);           \n"
-         "}                                         \n",
+    GLSL("// pl_shader_extract_features                              \n"
+         "{                                                          \n"
+         "vec3 lms = "$" * color.rgb;                                \n"
+         "lms = exp2(vec3(%f) * log2(max(lms, vec3(1e-10))));       \n"
+         "lms = (vec3(%f) + %f * lms)                               \n"
+         "        / (vec3(1.0) + %f * lms);                         \n"
+         "lms = exp2(vec3(%f) * log2(lms));                         \n"
+         "float I = dot(vec3(%f, %f, %f), lms);                     \n"
+         "color = vec4(I, 0.0, 0.0, 1.0);                           \n"
+         "}                                                          \n",
          SH_MAT3(feat_rgb2lms),
          PQ_M1, PQ_C1, PQ_C2, PQ_C3, PQ_M2,
          pl_ipt_lms2ipt.m[0][0], pl_ipt_lms2ipt.m[0][1], pl_ipt_lms2ipt.m[0][2]);
@@ -1598,15 +1602,30 @@ static void fill_tone_lut(void *data, const struct sh_lut_params *params)
     pl_tone_map_generate(data, lut_params);
 }
 
+struct gamut_lut_priv {
+    struct pl_gamut_map_params params;
+    struct sh_color_map_obj *obj;
+};
+
 static void fill_gamut_lut(void *data, const struct sh_lut_params *params)
 {
-    const struct pl_gamut_map_params *lut_params = params->priv;
+    const struct gamut_lut_priv *priv = params->priv;
+    const struct pl_gamut_map_params *lut_params = &priv->params;
+    struct sh_color_map_obj *obj = priv->obj;
     const int lut_size = params->width * params->height * params->depth;
-    void *tmp = pl_alloc(NULL, lut_size * sizeof(float) * lut_params->lut_stride);
-    pl_gamut_map_generate(tmp, lut_params);
+    const size_t needed = lut_size * sizeof(float) * lut_params->lut_stride;
+
+    // Reuse persistent temp buffer to avoid per-regeneration allocation
+    if (obj->gamut.tmp_size < needed) {
+        pl_free(obj->gamut.tmp);
+        obj->gamut.tmp = pl_alloc(NULL, needed);
+        obj->gamut.tmp_size = needed;
+    }
+
+    pl_gamut_map_generate(obj->gamut.tmp, lut_params);
 
     // Convert to 16-bit unsigned integer for GPU texture
-    const float *in = tmp;
+    const float *in = obj->gamut.tmp;
     uint16_t *out = data;
     pl_assert(lut_params->lut_stride == 3);
     pl_assert(params->comps == 4);
@@ -1617,8 +1636,6 @@ static void fill_gamut_lut(void *data, const struct sh_lut_params *params)
         in  += 3;
         out += 4;
     }
-
-    pl_free(tmp);
 }
 
 void pl_shader_color_map_ex(pl_shader sh, const struct pl_color_map_params *params,
@@ -1820,13 +1837,13 @@ void pl_shader_color_map_ex(pl_shader sh, const struct pl_color_map_params *para
 
     // Full path: convert input from normalized RGB to IPT
     // SDR_WHITE/10000 normalization is pre-folded into rgb2lms_scaled
-    GLSL("vec3 lmspq = "$" * color.rgb;             \n"
-         "lmspq = pow(max(lmspq, 0.0), vec3(%f));   \n"
-         "lmspq = (vec3(%f) + %f * lmspq)           \n"
-         "        / (vec3(1.0) + %f * lmspq);       \n"
-         "lmspq = pow(lmspq, vec3(%f));             \n"
-         "vec3 ipt = "$" * lmspq;                   \n"
-         "float i_orig = ipt.x;                     \n",
+    GLSL("vec3 lmspq = "$" * color.rgb;                          \n"
+         "lmspq = exp2(vec3(%f) * log2(max(lmspq, vec3(1e-10)))); \n"
+         "lmspq = (vec3(%f) + %f * lmspq)                        \n"
+         "        / (vec3(1.0) + %f * lmspq);                    \n"
+         "lmspq = exp2(vec3(%f) * log2(lmspq));                  \n"
+         "vec3 ipt = "$" * lmspq;                                \n"
+         "float i_orig = ipt.x;                                  \n",
          SH_MAT3(rgb2lms_scaled),
          PQ_M1, PQ_C1, PQ_C2, PQ_C3, PQ_M2,
          lms2ipt);
@@ -1907,34 +1924,16 @@ void pl_shader_color_map_ex(pl_shader sh, const struct pl_color_map_params *para
 
         bool need_recovery = tone.input_max >= tone.output_max;
         if (need_recovery && params->contrast_recovery && args->feature_map) {
-            ident_t pos, pt;
+            ident_t pos;
             ident_t lowres = sh_bind(sh, args->feature_map, PL_TEX_ADDRESS_CLAMP,
                                      PL_TEX_SAMPLE_LINEAR, "feature_map",
-                                     NULL, &pos, &pt);
+                                     NULL, &pos, NULL);
 
-            // Obtain HF detail map from bicubic interpolation of LF features
-            GLSL("vec2 lpos  = "$";                                 \n"
-                 "vec2 lpt   = "$";                                 \n"
-                 "vec2 lsize = vec2(textureSize("$", 0));           \n"
-                 "vec2 frac  = fract(lpos * lsize + vec2(0.5));     \n"
-                 "vec2 frac2 = frac * frac;                         \n"
-                 "vec2 inv   = vec2(1.0) - frac;                    \n"
-                 "vec2 inv2  = inv * inv;                           \n"
-                 "vec2 w0 = 1.0/6.0 * inv2 * inv;                   \n"
-                 "vec2 w1 = 2.0/3.0 - 0.5 * frac2 * (2.0 - frac);   \n"
-                 "vec2 w2 = 2.0/3.0 - 0.5 * inv2  * (2.0 - inv);    \n"
-                 "vec2 w3 = 1.0/6.0 * frac2 * frac;                 \n"
-                 "vec4 g = vec4(w0 + w1, w2 + w3);                  \n"
-                 "vec4 h = vec4(w1, w3) / g + inv.xyxy;             \n"
-                 "h.xy -= vec2(2.0);                                \n"
-                 "vec4 p = lpos.xyxy + lpt.xyxy * h;                \n"
-                 "float l00 = textureLod("$", p.xy, 0.0).r;         \n"
-                 "float l01 = textureLod("$", p.xw, 0.0).r;         \n"
-                 "float l0 = mix(l01, l00, g.y);                    \n"
-                 "float l10 = textureLod("$", p.zy, 0.0).r;         \n"
-                 "float l11 = textureLod("$", p.zw, 0.0).r;         \n"
-                 "float l1 = mix(l11, l10, g.y);                    \n"
-                 "float luma = mix(l1, l0, g.x);                    \n"
+            // Obtain LF luma from hardware bilinear interpolation of feature map
+            // (the feature map is already a lowpass signal at 1/smoothness
+            // resolution, so bilinear is sufficient and saves 3 texture taps
+            // + cubic weight ALU compared to manual bicubic)
+            GLSL("float luma = textureLod("$", "$", 0.0).r;         \n"
                  // Mix low-resolution tone mapped image with high-resolution
                  // tone mapped image according to desired strength.
                  "float highres = clamp(ipt.x, 0.0, 1.0);           \n"
@@ -1943,8 +1942,7 @@ void pl_shader_color_map_ex(pl_shader sh, const struct pl_color_map_params *para
                  "float base = tone_map(highres);                   \n"
                  "float sharp = tone_map(lowres) + detail;          \n"
                  "ipt.x = clamp(mix(base, sharp, "$"), "$", "$");   \n",
-                 pos, pt, lowres,
-                 lowres, lowres, lowres, lowres,
+                 lowres, pos,
                  SH_FLOAT(params->contrast_recovery),
                  SH_FLOAT(tone.output_min), SH_FLOAT_DYN(tone.output_max));
 
@@ -1966,6 +1964,10 @@ void pl_shader_color_map_ex(pl_shader sh, const struct pl_color_map_params *para
         sh_describef(sh, "gamut map (%s)", fun->name);
 
         pl_assert(obj);
+        struct gamut_lut_priv gamut_priv = {
+            .params = gamut,
+            .obj    = obj,
+        };
         ident_t lut = sh_lut(sh, sh_lut_params(
             .object     = &obj->gamut.lut,
             .var_type   = PL_VAR_FLOAT,
@@ -1979,7 +1981,7 @@ void pl_shader_color_map_ex(pl_shader sh, const struct pl_color_map_params *para
             .signature  = gamut_map_signature(&gamut),
             .cache      = SH_CACHE(sh),
             .fill       = fill_gamut_lut,
-            .priv       = &gamut,
+            .priv       = &gamut_priv,
         ));
         if (!lut) {
             SH_FAIL(sh, "Failed generating gamut-mapping LUT!");
@@ -1987,13 +1989,27 @@ void pl_shader_color_map_ex(pl_shader sh, const struct pl_color_map_params *para
         }
 
         // 3D LUT lookup (in ICh space)
+        // Use fast atan2 polynomial approximation (~0.09 degree max error)
+        // for the hue angle — well below LUT quantization with trilinear
+        // interpolation. Saves ~30-40 GPU cycles vs hardware atan().
         const float lut_range = gamut.max_luma - gamut.min_luma;
-        GLSL("vec3 idx;                             \n"
-             "idx.x = "$" * ipt.x + "$";            \n"
-             "idx.y = 2.0 * length(ipt.yz);         \n"
-             "idx.z = %f * atan(ipt.z, ipt.y) + 0.5;\n"
-             "ipt = "$"(idx).xyz;                   \n"
-             "ipt.yz -= vec2(32768.0/65535.0);      \n",
+        GLSL("vec3 idx;                                          \n"
+             "idx.x = "$" * ipt.x + "$";                         \n"
+             "idx.y = 2.0 * length(ipt.yz);                      \n"
+             "{                                                   \n"
+             "float ax = abs(ipt.y), ay = abs(ipt.z);            \n"
+             "float mn = min(ax, ay), mx = max(ax, ay);           \n"
+             "float a = mn / max(mx, 1e-6);                       \n"
+             "float s = a * a;                                    \n"
+             "float r = ((-0.0464964749 * s + 0.15931422) * s     \n"
+             "           - 0.327622764) * s * a + a;              \n"
+             "r = (ay > ax) ? 1.5707963 - r : r;                 \n"
+             "r = (ipt.y < 0.0) ? 3.1415927 - r : r;             \n"
+             "r = (ipt.z < 0.0) ? -r : r;                        \n"
+             "idx.z = r * %f + 0.5;                               \n"
+             "}                                                   \n"
+             "ipt = "$"(idx).xyz;                                \n"
+             "ipt.yz -= vec2(32768.0/65535.0);                   \n",
              SH_FLOAT(1.0f / lut_range),
              SH_FLOAT(-gamut.min_luma / lut_range),
              0.5f / M_PI, lut);
@@ -2012,12 +2028,12 @@ void pl_shader_color_map_ex(pl_shader sh, const struct pl_color_map_params *para
 
     // Convert IPT back to linear RGB
     // 10000/SDR_WHITE denormalization is pre-folded into lms2rgb_scaled
-    GLSL("lmspq = "$" * ipt;                        \n"
-         "vec3 lms = pow(max(lmspq, 0.0), vec3(1.0/%f)); \n"
-         "lms = max(lms - vec3(%f), 0.0)            \n"
-         "             / (vec3(%f) - %f * lms);     \n"
-         "lms = pow(lms, vec3(1.0/%f));             \n"
-         "color.rgb = "$" * lms;                    \n",
+    GLSL("lmspq = "$" * ipt;                                         \n"
+         "vec3 lms = exp2(vec3(1.0/%f) * log2(max(lmspq, vec3(1e-10)))); \n"
+         "lms = max(lms - vec3(%f), 0.0)                              \n"
+         "             / (vec3(%f) - %f * lms);                       \n"
+         "lms = exp2(vec3(1.0/%f) * log2(max(lms, vec3(1e-10))));    \n"
+         "color.rgb = "$" * lms;                                      \n",
          ipt2lms,
          PQ_M2, PQ_C1, PQ_C2, PQ_C3, PQ_M1,
          SH_MAT3(lms2rgb_scaled));

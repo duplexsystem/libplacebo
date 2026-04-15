@@ -47,6 +47,10 @@ struct pl_gl {
     // Incrementing counters to keep track of object uniqueness
     int buf_id;
 
+    // GL state cache — avoids redundant GL calls across passes
+    GLuint current_program;
+    GLuint current_fbo;
+
     // Cached capabilities
     int gl_ver;
     int gles_ver;

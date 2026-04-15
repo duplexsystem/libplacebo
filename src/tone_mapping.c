@@ -22,6 +22,15 @@
 #include <libplacebo/tone_mapping.h>
 
 #define fclampf(x, lo, hi) fminf(fmaxf(x, lo), hi)
+
+// Approximate float comparison for dynamic HDR metadata hysteresis.
+// Avoids triggering LUT regeneration from sub-perceptual metadata jitter.
+static inline bool float_near(float a, float b, float rel_tol)
+{
+    float diff = fabsf(a - b);
+    float mag = fmaxf(fabsf(a), fabsf(b));
+    return diff <= rel_tol * fmaxf(mag, 1e-6f);
+}
 static void fix_constants(struct pl_tone_map_constants *c)
 {
     const float eps = 1e-6f;
@@ -48,14 +57,17 @@ static inline bool constants_equal(const struct pl_tone_map_constants *a,
 bool pl_tone_map_params_equal(const struct pl_tone_map_params *a,
                               const struct pl_tone_map_params *b)
 {
+    // Dynamic HDR10+ metadata fields use approximate comparison (0.5%
+    // relative tolerance) to avoid per-frame LUT regeneration from
+    // sub-perceptual metadata jitter
     return a->function == b->function &&
            a->param == b->param &&
            a->input_scaling == b->input_scaling &&
            a->output_scaling == b->output_scaling &&
            a->lut_size == b->lut_size &&
-           a->input_min == b->input_min &&
-           a->input_max == b->input_max &&
-           a->input_avg == b->input_avg &&
+           float_near(a->input_min, b->input_min, 0.005f) &&
+           float_near(a->input_max, b->input_max, 0.005f) &&
+           float_near(a->input_avg, b->input_avg, 0.005f) &&
            a->output_min == b->output_min &&
            a->output_max == b->output_max &&
            constants_equal(&a->constants, &b->constants) &&

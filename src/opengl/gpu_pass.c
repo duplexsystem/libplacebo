@@ -173,6 +173,14 @@ void gl_pass_destroy(pl_gpu gpu, pl_pass pass)
     }
 
     struct pl_pass_gl *pass_gl = PL_PRIV(pass);
+    struct pl_gl *p = PL_PRIV(gpu);
+
+    // Invalidate state cache if this program is currently bound
+    if (p->current_program == pass_gl->program) {
+        gl->UseProgram(0);
+        p->current_program = 0;
+    }
+
     if (pass_gl->vao)
         gl->DeleteVertexArrays(1, &pass_gl->vao);
     gl->DeleteBuffers(1, &pass_gl->index_buffer);
@@ -514,7 +522,10 @@ void gl_pass_run(pl_gpu gpu, const struct pl_pass_run_params *params)
     struct pl_pass_gl *pass_gl = PL_PRIV(pass);
     struct pl_gl *p = PL_PRIV(gpu);
 
-    gl->UseProgram(pass_gl->program);
+    if (p->current_program != pass_gl->program) {
+        gl->UseProgram(pass_gl->program);
+        p->current_program = pass_gl->program;
+    }
 
     for (int i = 0; i < params->num_var_updates; i++)
         update_var(gpu, pass, &params->var_updates[i]);
@@ -530,7 +541,10 @@ void gl_pass_run(pl_gpu gpu, const struct pl_pass_run_params *params)
     switch (pass->params.type) {
     case PL_PASS_RASTER: {
         struct pl_tex_gl *target_gl = PL_PRIV(params->target);
-        gl->BindFramebuffer(GL_DRAW_FRAMEBUFFER, target_gl->fbo);
+        if (p->current_fbo != target_gl->fbo) {
+            gl->BindFramebuffer(GL_DRAW_FRAMEBUFFER, target_gl->fbo);
+            p->current_fbo = target_gl->fbo;
+        }
         if (!pass->params.load_target && p->has_invalidate_fb) {
             GLenum fb = target_gl->fbo ? GL_COLOR_ATTACHMENT0 : GL_COLOR;
             gl->InvalidateFramebuffer(GL_DRAW_FRAMEBUFFER, 1, &fb);
@@ -541,7 +555,6 @@ void gl_pass_run(pl_gpu gpu, const struct pl_pass_run_params *params)
         gl->Scissor(params->scissors.x0, params->scissors.y0,
                     pl_rect_w(params->scissors), pl_rect_h(params->scissors));
         gl->Enable(GL_SCISSOR_TEST);
-        gl_check_err(gpu, "gl_pass_run: enabling viewport/scissor");
 
         const struct pl_blend_params *blend = pass->params.blend_params;
         if (blend) {
@@ -557,7 +570,6 @@ void gl_pass_run(pl_gpu gpu, const struct pl_pass_run_params *params)
                                   map_blend[blend->src_alpha],
                                   map_blend[blend->dst_alpha]);
             gl->Enable(GL_BLEND);
-            gl_check_err(gpu, "gl_pass_run: enabling blend");
         }
 
         // Update VBO and VAO
@@ -585,8 +597,6 @@ void gl_pass_run(pl_gpu gpu, const struct pl_pass_run_params *params)
             pass_gl->vao_id = vert_id;
             pass_gl->vao_offset = vert_offset;
         }
-
-        gl_check_err(gpu, "gl_pass_run: update/bind vertex buffer");
 
         static const GLenum map_prim[PL_PRIM_TYPE_COUNT] = {
             [PL_PRIM_TRIANGLE_LIST]     = GL_TRIANGLES,
@@ -636,6 +646,7 @@ void gl_pass_run(pl_gpu gpu, const struct pl_pass_run_params *params)
                 gl->DisableVertexAttribArray(i);
         }
 
+        gl->Disable(GL_SCISSOR_TEST);
         if (blend)
             gl->Disable(GL_BLEND);
         break;
@@ -676,6 +687,7 @@ void gl_pass_run(pl_gpu gpu, const struct pl_pass_run_params *params)
         gl->MemoryBarrier(barriers);
 
     gl->UseProgram(0);
+    p->current_program = 0;
     gl_check_err(gpu, "gl_pass_run");
     gl_poll_callbacks(gpu); // drain completed async fences once per pass
     RELEASE_CURRENT();

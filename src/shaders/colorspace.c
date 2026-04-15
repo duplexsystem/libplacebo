@@ -1773,6 +1773,17 @@ void pl_shader_color_map_ex(pl_shader sh, const struct pl_color_map_params *para
     bool need_tone_map = !pl_tone_map_params_noop(&tone);
     bool need_gamut_map = !pl_gamut_map_params_noop(&gamut);
 
+    // Fast path: skip linearize/delinearize entirely when color mapping is
+    // a complete no-op (same primaries, same transfer, no tone/gamut mapping)
+    if (!need_tone_map && !need_gamut_map &&
+        src.primaries == dst.primaries && src.transfer == dst.transfer)
+    {
+        if (args->prelinearized)
+            pl_shader_delinearize(sh, &dst);
+        GLSL("}\n");
+        return;
+    }
+
     if (!args->prelinearized)
         pl_shader_linearize(sh, &src);
 

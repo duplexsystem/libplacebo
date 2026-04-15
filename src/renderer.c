@@ -2245,6 +2245,19 @@ static void pass_convert_colors(struct pass_state *pass)
         if (target->icc)
             target_csp.transfer = PL_COLOR_TRC_LINEAR;
 
+        // Skip expensive color mapping when source and target match
+        struct pl_color_space inf_src = image->color, inf_dst = target_csp;
+        pl_color_space_infer_map(&inf_src, &inf_dst);
+        if (pl_color_space_equal(&inf_src, &inf_dst) && !target->icc) {
+            need_conversion = false;
+        }
+    }
+
+    if (need_conversion) {
+        struct pl_color_space target_csp = target->color;
+        if (target->icc)
+            target_csp.transfer = PL_COLOR_TRC_LINEAR;
+
         if (pass->need_peak_fbo && !img_tex(pass, img))
             return;
 

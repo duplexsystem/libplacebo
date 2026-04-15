@@ -825,13 +825,14 @@ bool pl_shader_sample_polar(pl_shader sh, const struct pl_sample_src *src,
                 use_gather &= !src->tex || src->tex->params.format->gatherable;
 
                 // Gathering from components other than the R channel requires
-                // support for GLSL 400, which introduces the overload of
-                // textureGather* that allows specifying the component.
+                // support for GLSL 400 (or GLSL ES 310), which introduces
+                // the overload of textureGather* that allows specifying the
+                // component.
                 //
                 // This is also the minimum requirement if we don't know the
                 // texture format capabilities, for the sampler2D interface
                 if (cmask != 0x1 || !src->tex)
-                    use_gather &= sh_glsl(sh).version >= 400;
+                    use_gather &= sh_glsl(sh).version >= (sh_glsl(sh).gles ? 310 : 400);
 
                 if (!use_gather) {
                     // Switch to direct sampling instead

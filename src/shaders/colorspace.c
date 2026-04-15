@@ -118,7 +118,9 @@ void pl_shader_dovi_reshape(pl_shader sh, const struct pl_dovi_metadata *data)
          "sig = clamp(color.rgb, 0.0, 1.0);     \n");
 
     float coeffs_data[8][4];
-    float mmr_packed_data[8*6][4];
+    // Use fixed maximum size (8 segments × 3 orders × 2 vec4s) to prevent
+    // shader recompilation when MMR dimensions change between frames
+    float mmr_packed_data[48][4] = {0};
 
     for (int c = 0; c < 3; c++) {
         const struct pl_reshape_data *comp = &data->comp[c];
@@ -129,23 +131,18 @@ void pl_shader_dovi_reshape(pl_shader sh, const struct pl_dovi_metadata *data)
         GLSL("s = sig[%d]; \n", c);
 
         // Prepare coefficients for GPU
-        bool has_poly = false, has_mmr = false, mmr_single = true;
-        int mmr_idx = 0, min_order = 3, max_order = 1;
+        int mmr_idx = 0;
         memset(coeffs_data, 0, sizeof(coeffs_data));
+        memset(mmr_packed_data, 0, sizeof(mmr_packed_data));
         for (int i = 0; i < comp->num_pivots - 1; i++) {
             switch (comp->method[i]) {
             case 0: // polynomial
-                has_poly = true;
                 coeffs_data[i][3] = 0.0; // order=0 signals polynomial
                 for (int k = 0; k < 3; k++)
                     coeffs_data[i][k] = comp->poly_coeffs[i][k];
                 break;
 
             case 1:
-                min_order = PL_MIN(min_order, comp->mmr_order[i]);
-                max_order = PL_MAX(max_order, comp->mmr_order[i]);
-                mmr_single = !has_mmr;
-                has_mmr = true;
                 coeffs_data[i][3] = (float) comp->mmr_order[i];
                 coeffs_data[i][0] = comp->mmr_constant[i];
                 coeffs_data[i][1] = (float) mmr_idx;
@@ -226,34 +223,27 @@ void pl_shader_dovi_reshape(pl_shader sh, const struct pl_dovi_metadata *data)
 
         }
 
-        ident_t mmr = NULL_IDENT;
-        if (has_mmr) {
-            mmr = sh_var(sh, (struct pl_shader_var) {
-                .data = mmr_packed_data,
-                .var = {
-                    .name = "mmr",
-                    .type = PL_VAR_FLOAT,
-                    .dim_v = 4,
-                    .dim_m = 1,
-                    .dim_a = mmr_idx,
-                },
-            });
-        }
+        // Always declare MMR uniform at fixed maximum size and always
+        // generate the combined poly+MMR path. This prevents shader
+        // recompilation when DV RPU metadata changes reshape methods or
+        // MMR orders between frames. The coeffs.w field (0 = poly,
+        // nonzero = MMR order) selects the correct path at runtime.
+        ident_t mmr = sh_var(sh, (struct pl_shader_var) {
+            .data = mmr_packed_data,
+            .var = {
+                .name = "mmr",
+                .type = PL_VAR_FLOAT,
+                .dim_v = 4,
+                .dim_m = 1,
+                .dim_a = PL_ARRAY_SIZE(mmr_packed_data),
+            },
+        });
 
-        if (has_mmr && has_poly) {
-            GLSL("if (coeffs.w == 0.0) { \n");
-            reshape_poly(sh);
-            GLSL("} else { \n");
-            reshape_mmr(sh, mmr, mmr_single, min_order, max_order);
-            GLSL("} \n");
-        } else if (has_poly) {
-            reshape_poly(sh);
-        } else {
-            assert(has_mmr);
-            GLSL("{ \n");
-            reshape_mmr(sh, mmr, mmr_single, min_order, max_order);
-            GLSL("} \n");
-        }
+        GLSL("if (coeffs.w == 0.0) { \n");
+        reshape_poly(sh);
+        GLSL("} else { \n");
+        reshape_mmr(sh, mmr, false, 1, 3);
+        GLSL("} \n");
 
         ident_t lo = sh_var(sh, (struct pl_shader_var) {
             .var = pl_var_float("lo"),
